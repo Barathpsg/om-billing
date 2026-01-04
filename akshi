@@ -1,0 +1,308 @@
+from flask import Flask, request, render_template_string, redirect, session
+from datetime import datetime, date
+import csv, os
+from collections import defaultdict
+
+app = Flask(__name__)
+app.secret_key = "oms_secret_key"
+
+# ---------------- SHOP DETAILS ----------------
+SHOP_NAME = "OM SHAKTHI TEXTILES (OMS)"
+SHOP_ADDRESS = "173, M.G.Road, Villupuram 605602"
+
+# ---------------- ITEMS ----------------
+ITEMS = {
+    "1": "Inners", "2": "Skirt", "3": "Shirt", "4": "Amman Skirt",
+    "5": "Vastie", "6": "Lungi", "7": "T-Shirt", "8": "Track Pant",
+    "9": "Pants", "10": "Tops", "11": "Shall", "12": "Leggings",
+    "13": "Vail Sarees", "14": "Sarees", "15": "Baby Set",
+    "16": "Towels", "17": "Kirchifs", "18": "Bedsheet",
+    "19": "Shalwars", "20": "Sweater", "21": "Muffler & Gloves"
+}
+
+# ---------------- CSV ----------------
+def get_monthly_csv():
+    now = datetime.now()
+    filename = f"billing_{now.year}_{now.month:02d}.csv"
+    if not os.path.exists(filename):
+        with open(filename, "w", newline="") as f:
+            csv.writer(f).writerow(
+                ["Bill No", "Date", "Customer", "Item", "Price", "Qty", "Total"]
+            )
+    return filename
+
+def get_last_bill_no(filename):
+    if not os.path.exists(filename):
+        return 0
+    with open(filename) as f:
+        rows = list(csv.reader(f))
+        nums = [int(r[0]) for r in rows[1:] if r and r[0].isdigit()]
+        return max(nums) if nums else 0
+
+# ---------------- BILL PAGE ----------------
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>OMS Smart Billing</title>
+<style>
+body{font-family:Arial;background:#f4f6f9}
+.bill-box{width:700px;margin:20px auto;background:white;padding:20px;
+border-radius:8px;box-shadow:0 0 15px #aaa}
+
+input,select,button{width:100%;padding:8px;margin:5px 0}
+button{background:#007bff;color:white;border:none;border-radius:4px}
+
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{border:1px solid #333;padding:6px;text-align:center}
+th{background:#eee}
+
+.total-box{background:#28a745;color:white;padding:10px;font-size:20px}
+
+.menu{display:flex;gap:10px}
+.menu a{flex:1;text-decoration:none;background:#6f42c1;color:white;
+padding:10px;text-align:center;border-radius:5px}
+
+.no-print{display:block}
+
+@media print{
+  .no-print{display:none}
+  body{background:white}
+  .bill-box{box-shadow:none;width:80mm}
+}
+@page{
+  size:80mm auto;
+  margin:5mm;
+}
+</style>
+</head>
+
+<body>
+<div class="bill-box">
+
+<div class="menu no-print">
+<a href="/month">📈 Monthly Sale</a>
+</div>
+
+<hr>
+
+<h3>Customer Name: {{customer}}</h3>
+
+<div style="display:flex;justify-content:space-between">
+<b>Bill No: {{bill_no}}</b>
+<b>{{date_time}}</b>
+</div>
+
+<h2 style="text-align:center">{{shop}}</h2>
+<p style="text-align:center">{{address}}</p>
+
+<form method="post" class="no-print">
+<select name="code" required>
+<option value="">Select Item</option>
+{% for c,n in items_list %}
+<option value="{{c}}">{{c}} - {{n}}</option>
+{% endfor %}
+</select>
+
+<input name="price" placeholder="Rate" required>
+<input name="qty" placeholder="Quantity" required>
+<input name="customer" placeholder="Customer Name" value="{{customer}}">
+<input name="discount" placeholder="Discount Amount" value="{{discount}}">
+<button>Add Item</button>
+</form>
+
+{% if items %}
+<table>
+<tr>
+<th>Item</th><th>Rate</th><th>Qty</th><th>Total</th>
+<th class="no-print">X</th>
+</tr>
+{% for i in items %}
+<tr>
+<td>{{i.name}}</td>
+<td>{{i.price}}</td>
+<td>{{i.qty}}</td>
+<td>{{i.total}}</td>
+<td class="no-print">
+<form method="post" action="/delete_item">
+<input type="hidden" name="index" value="{{loop.index0}}">
+<button style="background:red">Del</button>
+</form>
+</td>
+</tr>
+{% endfor %}
+</table>
+
+<p>Subtotal: ₹{{subtotal}}</p>
+<p>GST (5%): ₹{{gst}}</p>
+<p>Discount: ₹{{discount}}</p>
+<div class="total-box">Grand Total: ₹{{grand}}</div>
+
+<form method="post" action="/print_bill" class="no-print">
+<button type="submit" onclick="window.print()">🖨 Print</button>
+</form>
+
+<form method="post" action="/next_bill" class="no-print">
+<button>➡ Next Bill</button>
+</form>
+
+{% endif %}
+
+</div>
+</body>
+</html>
+"""
+
+# ---------------- ROUTES ----------------
+@app.route("/", methods=["GET","POST"])
+def billing():
+    session.setdefault("cart",[])
+    session.setdefault("bill_no",get_last_bill_no(get_monthly_csv())+1)
+    session.setdefault("customer","")
+    session.setdefault("discount",0)
+
+    if request.method=="POST":
+        try:
+            price=float(request.form["price"])
+            qty=int(request.form["qty"])
+            discount=float(request.form.get("discount") or 0)
+            customer=request.form.get("customer","")
+            code=request.form["code"]
+        except:
+            return redirect("/")
+
+        item=ITEMS.get(code,"Unknown")
+        total=round(price*qty,2)
+
+        # Add item to cart
+        session["cart"].append({
+            "name":item,
+            "price":price,
+            "qty":qty,
+            "total":total
+        })
+
+        session["customer"]=customer
+        session["discount"]=discount
+        session.modified = True
+
+    subtotal=round(sum(i["total"] for i in session["cart"]),2)
+    gst=round(subtotal*0.05,2)
+    discount=session.get("discount",0)
+    grand=round(subtotal+gst-discount,2)
+
+    return render_template_string(
+        HTML,
+        items=session["cart"],
+        subtotal=subtotal,
+        gst=gst,
+        discount=discount,
+        grand=grand,
+        shop=SHOP_NAME,
+        address=SHOP_ADDRESS,
+        bill_no=session["bill_no"],
+        date_time=datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+        items_list=ITEMS.items(),
+        customer=session.get("customer","")
+    )
+
+# ---------------- PRINT BILL ----------------
+@app.route("/print_bill", methods=["POST"])
+def print_bill():
+    filename = get_monthly_csv()
+    bill_no = session.get("bill_no")
+    customer = session.get("customer", "")
+    for item in session.get("cart",[]):
+        with open(filename,"a",newline="") as f:
+            csv.writer(f).writerow(
+                [bill_no, str(date.today()), customer, item["name"], item["price"], item["qty"], item["total"]]
+            )
+    return redirect("/")
+
+@app.route("/delete_item", methods=["POST"])
+def delete_item():
+    index=int(request.form["index"])
+    if 0<=index<len(session["cart"]):
+        session["cart"].pop(index)
+        session.modified = True
+    return redirect("/")
+
+@app.route("/next_bill",methods=["POST"])
+def next_bill():
+    session["cart"]=[]
+    session["bill_no"]+=1
+    session["customer"]=""
+    session["discount"]=0
+    session.modified = True
+    return redirect("/")
+
+# ---------------- MONTHLY GRAPH ----------------
+@app.route("/month")
+def month():
+    daily = defaultdict(float)
+    csv_file = get_monthly_csv()
+    if os.path.exists(csv_file):
+        with open(csv_file) as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            for r in reader:
+                if len(r)==7:
+                    try:
+                        daily[r[1]] += float(r[6])
+                    except ValueError:
+                        pass
+    labels = sorted(daily.keys())
+    values = [daily[d] for d in labels]
+
+    return render_template_string("""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Monthly Sale</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+.no-print{display:block}
+@media print{.no-print{display:none}}
+</style>
+</head>
+<body>
+
+<h2>Monthly Sale (Date Wise)</h2>
+
+{% if labels %}
+<canvas id="chart"></canvas>
+{% else %}
+<p>No sales data available</p>
+{% endif %}
+
+<div class="no-print">
+<a href="/">⬅ Back to Bill</a>
+</div>
+
+<script>
+const canvas = document.getElementById('chart');
+if(canvas){
+  new Chart(canvas,{
+    type:'bar',
+    data:{
+      labels: {{ labels|tojson }},
+      datasets:[{
+        label:'Total Sale',
+        data: {{ values|tojson }},
+        backgroundColor:'green'
+      }]
+    },
+    options:{
+        scales:{x:{title:{display:true,text:'Date'}},y:{title:{display:true,text:'Total Sale'}}}
+    }
+  });
+}
+</script>
+
+</body>
+</html>
+""", labels=labels, values=values)
+
+# ---------------- RUN ----------------
+if __name__=="__main__":
+    app.run(debug=True)
